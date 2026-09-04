@@ -36,7 +36,19 @@ async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
-    if client.user not in message.mentions:
+    pinged = client.user in message.mentions
+
+    # also respond when replying to the bot (no ping needed)
+    if not pinged and message.reference and message.reference.message_id:
+        try:
+            ref = message.reference.resolved or await message.channel.fetch_message(
+                message.reference.message_id
+            )
+            pinged = ref and ref.author == client.user
+        except Exception:
+            pinged = False
+
+    if not pinged:
         return
 
     text = message.content
@@ -59,7 +71,7 @@ async def on_message(message: discord.Message):
     async with message.channel.typing():
         try:
             history = []
-            async for m in message.channel.history(limit=15):
+            async for m in message.channel.history(limit=25):
                 if m.author.bot and m.author != client.user:
                     continue
                 history.append(f"{m.author.display_name}: {m.content[:200]}")
@@ -79,6 +91,7 @@ async def on_message(message: discord.Message):
                 guild=message.guild,
                 author_is_admin=context["author_is_admin"],
                 context=context,
+                origin=message.channel,
             )
         except Exception as e:
             print(f"on_message error: {type(e).__name__}: {str(e)[:300]}")
