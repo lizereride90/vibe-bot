@@ -5,7 +5,7 @@ from groq import Groq
 
 from tools import TOOLS_SCHEMA, run_tool
 
-MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 
 SYSTEM = """You are Vibe, a real Discord member and community manager, not a chatbot.
 You run on many servers at once — each request tells you which server it is, never mix servers up.
@@ -51,20 +51,27 @@ async def ask(prompt: str, guild, author_is_admin: bool, context: dict):
     created_roles = []
 
     for _ in range(6):
-        resp = await asyncio.to_thread(
-            client.chat.completions.create,
-            model=MODEL,
-            messages=messages,
-            tools=TOOLS_SCHEMA,
-            tool_choice="auto",
-            temperature=0.7,
-            max_tokens=1200,
-        )
+        try:
+            resp = await asyncio.to_thread(
+                client.chat.completions.create,
+                model=MODEL,
+                messages=messages,
+                tools=TOOLS_SCHEMA,
+                tool_choice="auto",
+                temperature=0.7,
+                max_tokens=3000,
+            )
+        except Exception as e:
+            print(f"Groq error: {type(e).__name__}: {str(e)[:200]}")
+            return (
+                "my AI brain hiccuped (Groq API error) — ping me again in a bit.",
+                created_roles,
+            )
 
         msg = resp.choices[0].message
 
         if not msg.tool_calls:
-            return msg.content or "done.", created_roles
+            return msg.content or "done — check the server.", created_roles
 
         messages.append({
             "role": "assistant",

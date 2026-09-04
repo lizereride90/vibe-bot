@@ -57,28 +57,33 @@ async def on_message(message: discord.Message):
     last_used[gid] = now
 
     async with message.channel.typing():
-        history = []
-        async for m in message.channel.history(limit=15):
-            if m.author.bot and m.author != client.user:
-                continue
-            history.append(f"{m.author.display_name}: {m.content[:200]}")
-        history.reverse()
+        try:
+            history = []
+            async for m in message.channel.history(limit=15):
+                if m.author.bot and m.author != client.user:
+                    continue
+                history.append(f"{m.author.display_name}: {m.content[:200]}")
+            history.reverse()
 
-        context = {
-            "guild_id": gid,
-            "guild_name": message.guild.name,
-            "author": message.author.display_name,
-            "author_is_admin": message.author.guild_permissions.administrator,
-            "recent_chat": history[:-1],  # exclude the ping itself
-            "channel_name": message.channel.name,
-        }
+            context = {
+                "guild_id": gid,
+                "guild_name": message.guild.name,
+                "author": message.author.display_name,
+                "author_is_admin": message.author.guild_permissions.administrator,
+                "recent_chat": history[:-1],  # exclude the ping itself
+                "channel_name": message.channel.name,
+            }
 
-        reply, created_roles = await ask(
-            prompt=text,
-            guild=message.guild,
-            author_is_admin=context["author_is_admin"],
-            context=context,
-        )
+            reply, created_roles = await ask(
+                prompt=text,
+                guild=message.guild,
+                author_is_admin=context["author_is_admin"],
+                context=context,
+            )
+        except Exception as e:
+            print(f"on_message error: {type(e).__name__}: {str(e)[:300]}")
+            await message.reply("something broke on my end — ping me again in a bit.")
+            return
 
         if created_roles:
             lines = "\n".join(f"`{r.name}` — `{r.id}`" for r in created_roles)
