@@ -4,6 +4,7 @@ import discord
 from dotenv import load_dotenv
 
 from brain import ask
+from watchdog import watch
 
 load_dotenv()
 
@@ -49,6 +50,11 @@ async def on_message(message: discord.Message):
             pinged = False
 
     if not pinged:
+        # passive scan: watchdog watches every message for spam/scams/questions
+        try:
+            await watch(message)
+        except Exception as e:
+            print(f"watchdog error: {type(e).__name__}: {str(e)[:200]}")
         return
 
     text = message.content

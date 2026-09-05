@@ -80,6 +80,18 @@ READ_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "member_avatar",
+            "description": "Get a member's profile picture / avatar link.",
+            "parameters": {
+                "type": "object",
+                "properties": {"member": {"type": "string"}},
+                "required": ["member"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_notes",
             "description": "Show things I remembered about this server.",
             "parameters": {"type": "object", "properties": {}},
@@ -453,6 +465,21 @@ WRITE_TOOLS = [
                     },
                 },
                 "required": ["question", "options"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_invite",
+            "description": "Make a server invite link for a channel. max_uses 0 = unlimited.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string", "description": "Omit for current channel"},
+                    "max_age_hours": {"type": "integer", "description": "Link expiry, 0 = never"},
+                    "max_uses": {"type": "integer"},
+                },
             },
         },
     },
@@ -940,6 +967,26 @@ async def _execute(name, args, guild, origin):
             poll.add_answer(text=o)
         await ch.send(poll=poll)
         return f"Posted poll in #{ch.name}: {args['question'][:100]}", []
+
+    if name == "create_invite":
+        ch = _find_text_channel(guild, args["channel"]) if args.get("channel") else origin
+        if ch is None and args.get("channel"):
+            ch = _find_voice_channel(guild, args["channel"])
+        if ch is None:
+            ch = origin
+        if ch is None:
+            return "Couldn't find that channel.", []
+        age = max(0, min(int(args.get("max_age_hours", 24)), 168)) * 3600
+        uses = max(0, min(int(args.get("max_uses", 0)), 100))
+        inv = await ch.create_invite(max_age=age, max_uses=uses, reason="Vibe bot")
+        return f"Invite for #{ch.name}: {inv.url}", []
+
+    if name == "member_avatar":
+        m = _find_member(guild, args["member"])
+        if not m:
+            return f"Couldn't find anyone matching '{args['member']}'.", []
+        pic = m.display_avatar.url
+        return f"{m.display_name}'s avatar: {pic}", []
 
     # ----- memory -----
     if name == "save_note":

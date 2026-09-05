@@ -1,12 +1,11 @@
 import os
 import json
 import asyncio
-from openai import OpenAI
+from groq import Groq
 
 from tools import TOOLS_SCHEMA, run_tool
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 SYSTEM = """You are Vibe, a real Discord member and community manager, not a chatbot.
 You run on many servers at once — each request tells you which server it is, never mix servers up.
@@ -32,7 +31,7 @@ _client = None
 def get_client():
     global _client
     if _client is None:
-        _client = OpenAI(api_key=os.getenv("GOOGLE_API_KEY"), base_url=BASE_URL)
+        _client = Groq(api_key=os.getenv("GROQ_API_KEY"))
     return _client
 
 
@@ -67,9 +66,9 @@ async def ask(prompt: str, guild, author_is_admin: bool, context: dict, origin=N
                 max_tokens=3000,
             )
         except Exception as e:
-            print(f"Gemini error: {type(e).__name__}: {str(e)[:200]}")
+            print(f"Groq error: {type(e).__name__}: {str(e)[:200]}")
             return (
-                "my AI brain hiccuped (Google API error) — ping me again in a bit.",
+                "my AI brain hiccuped (Groq API error) — ping me again in a bit.",
                 created_roles,
             )
 
