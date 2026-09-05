@@ -1,0 +1,6 @@
+# junk Discloud should skip on upload (keeps deploys fast)
+.venv
+__pycache__
+.git
+*.log
+.vscode

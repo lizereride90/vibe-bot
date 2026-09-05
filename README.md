@@ -43,6 +43,13 @@ python bot.py
 
 Every message gets scanned: phishing/nitro scams, slurs, spam bursts → deleted + warned, timed out if nasty. Server questions and "vibe" name-calls get answered with full tool access. Normal chat is ignored. Toggle with `WATCHDOG_ENABLED=false`. Needs Manage Messages + Moderate Members perms for the mod actions.
 
+## Host on Discloud (free, 24/7)
+
+1. Zip the project (`bot.py`, `brain.py`, `tools.py`, `watchdog.py`, `requirements.txt`, `discloud.config`, `.env`) or connect the GitHub repo.
+2. Upload via dashboard / CLI / their Discord bot — `discloud.config` already sets `MAIN=bot.py`, `RAM=100` (free max), `AUTORESTART=true`.
+3. Set env vars on Discloud if `.env` wasn't included: `DISCORD_TOKEN`, `GROQ_API_KEY`, `GROQ_MODEL`, `WATCHDOG_MODEL`, `WATCHDOG_ENABLED`.
+4. Give the bot Manage Messages + Moderate Members perms for watchdog mod actions.
+
 ## Files
 
 - `bot.py` — connects to Discord, listens for pings, feeds everything else to the watchdog
