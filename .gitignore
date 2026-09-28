@@ -1,5 +1,13 @@
 .env
 notes.json
+settings.json
+warnings.json
+giveaways.json
+triggers.json
+afk.json
+xp.json
+reaction_roles.json
+sticky.json
 __pycache__/
 *.pyc
 .venv/
