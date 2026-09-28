@@ -22,8 +22,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # Live replacements: gemini-2.5-flash-lite (cheapest, highest quota),
 # gemini-2.5-flash, gemini-3.5-flash-lite, gemini-3.5-flash.
 # chat() auto-tries backups if the configured model 404s.
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
-GEMINI_BACKUPS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-3.5-flash-lite"]
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+GEMINI_BACKUPS = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"]
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
@@ -180,18 +180,17 @@ async def chat(messages, tools=None, tool_choice="auto",
     """
     last_err = None
 
-    # 1) Gemini keys x models — next key on 429/503, next model on 404-retired.
+    # 1) Gemini: models outer, keys inner — every model gets every key.
+    # dead model -> next model. 429/503/auth -> next key. thought_signature
+    # bug -> skip gemini entirely (falls back to groq below).
     pref_g = os.getenv("GEMINI_MODEL", GEMINI_MODEL)
     gemini_models = [pref_g] + [m for m in GEMINI_BACKUPS if m != pref_g]
     skip_gemini = False
     gkeys = _gemini_keys()
-    for gi, gkey in enumerate(gkeys):
+    for gmodel in gemini_models:
         if skip_gemini:
             break
-        next_key = False
-        for gmodel in gemini_models:
-            if next_key or skip_gemini:
-                break
+        for gi, gkey in enumerate(gkeys):
             for attempt in range(2):  # 1 retry for transient spikes on same key
                 try:
                     content, calls = await _gemini_chat(
@@ -208,7 +207,7 @@ async def chat(messages, tools=None, tool_choice="auto",
                     dead = "404" in msg or "no longer available" in msg or "not found" in msg.lower() or "does not exist" in msg
                     if dead:
                         print(f"llm: gemini model={gmodel} dead, trying next model...")
-                        break  # next model, same key
+                        break  # next model (inner key loop broken below via flag)
                     transient = any(s in msg for s in ("503", "500", "429", "overloaded", "high demand", "UNAVAILABLE", "timeout", "Timeout"))
                     is_auth = any(s in msg for s in ("401", "403", "API key", "API_KEY_INVALID", "invalid"))
                     if transient and attempt == 0:
@@ -217,12 +216,16 @@ async def chat(messages, tools=None, tool_choice="auto",
                     tag = f"key{gi+1}/{len(gkeys)} model={gmodel}"
                     if is_auth or transient:
                         print(f"llm: gemini {tag} failed ({msg[:150]}), trying next key...")
-                        next_key = True
-                        break  # out of attempt loop, then out of model loop below
+                        break  # next key, same model
                     else:
                         print(f"llm: gemini {tag} failed ({type(e).__name__}: {msg[:150]}), trying groq...")
                         skip_gemini = True
                         break
+            if skip_gemini:
+                break
+            # dead-model break above must escape the key loop too:
+            if last_err and ("404" in str(last_err)[:300] or "no longer available" in str(last_err)[:300]):
+                continue
 
     # 2) Groq keys in order — next key on 429 rate-limit (the whole point).
     # Also rotate MODELS: if configured model 404s (retired/Enterprise-only),
