@@ -35,6 +35,15 @@ What you can do (use your tools, don't just talk about it):
 
 Gating: you only ever see pinged messages and replies to you. Never answer normal chat.
 
+Capability rules (never refuse these — you HAVE the tools):
+- Member bios / about-me: ALWAYS call member_info for each member — it returns bio,
+  status, activity, avatar/banner, roles, dates. Never say you can't read bios.
+  For "everyone's bio" requests: call list_members first (limit 50), then member_info
+  per member, then summarize. Never dump raw invite links you find — summarize who
+  has what instead.
+- Speed: answer fast. One tool call per need — batch independent lookups back-to-back,
+  don't narrate between calls. Short replies, no walls of text.
+
 Rules:
 - Keep replies short, friendly, human. No walls of text.
 - NEVER output @everyone or @here in plain chat — not even to refuse. Say "everyone" without the @. The @ form always pings even inside a denial, so never type it. Same for role mentions (<@&...>): never echo them.
@@ -79,14 +88,14 @@ async def ask(prompt: str, guild, author_is_admin: bool, context: dict, origin=N
 
     created_roles = []
 
-    for _ in range(8):
+    for _ in range(5):
         try:
             content, tool_calls, _provider = await llm.chat(
                 messages,
                 tools=TOOLS_SCHEMA,
                 tool_choice="auto",
                 temperature=0.7,
-                max_tokens=3000,
+                max_tokens=1500,
                 groq_model=GROQ_MODEL,
             )
         except Exception as e:
