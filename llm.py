@@ -1,12 +1,14 @@
-"""Unified LLM layer: Gemini primary, Groq fallback. Multi-key rotation supported.
-
-Uses Gemini's OpenAI-compatible endpoint so the same TOOLS_SCHEMA works
-for both providers with zero conversion:
-    POST https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
-    Header: Authorization: Bearer GEMINI_API_KEY
+"""Unified LLM layer: OpenRouter primary, Gemini second, Groq last.
+Multi-key rotation on every leg. All legs OpenAI-compatible so the
+same TOOLS_SCHEMA works everywhere with zero conversion:
+    OpenRouter: POST https://openrouter.ai/api/v1/chat/completions
+    Gemini:     POST https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
 
 No new dependencies — aiohttp is already required.
 Set in .env:
+    OPENROUTER_API_KEY=key1,key2  (comma-separated, rotates on 429/503/5xx)
+    OPENROUTER_MODEL=nvidia/nemotron-3.5-lightning:free  (default free, tool-capable)
+    OPENROUTER_BACKUPS=model-a,model-b  (optional comma list, auto-tried on 404)
     GEMINI_API_KEY=key1,key2,key3   (comma-separated, rotates on 429/503/5xx)
     GEMINI_MODEL=gemini-2.5-flash-lite   (default — 2.0-flash was shut down Sep 2026)
     GROQ_API_KEY=key1,key2,key3     (comma-separated, rotates on 429)
@@ -25,6 +27,14 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 GEMINI_BACKUPS = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"]
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+
+# OpenRouter: one key unlocks ~24 rotating :free models behind a single
+# OpenAI-compat endpoint. Server-side failover + our key/model rotation.
+# Free tool-capable picks (Oct 2026): nvidia/nemotron-3.5-lightning:free,
+# openai/gpt-oss-20b:free, z-ai/glm-4.5-air:free, qwen/qwen3-32b:free.
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 # NOTE: llama-3.3-70b-versatile went Enterprise-only on Groq (404 for free keys).
@@ -64,6 +74,25 @@ def _gemini_keys() -> list[str]:
 
 def _groq_keys() -> list[str]:
     return _collect("GROQ_API_KEY")
+
+
+def _openrouter_keys() -> list[str]:
+    return _collect("OPENROUTER_API_KEY")
+
+
+def _openrouter_models() -> list[str]:
+    """Preferred model + backups, deduped. Env OPENROUTER_BACKUPS optional."""
+    pref = os.getenv("OPENROUTER_MODEL", OPENROUTER_MODEL) or OPENROUTER_MODEL
+    fallbacks = ["nvidia/nemotron-3.5-lightning:free", "openai/gpt-oss-20b:free",
+                 "z-ai/glm-4.5-air:free", "qwen/qwen3-32b:free"]
+    extra = _split_keys(os.getenv("OPENROUTER_BACKUPS", ""))
+    models = [pref] + [m for m in extra + fallbacks if m != pref]
+    seen, out = set(), []
+    for m in models:
+        if m not in seen:
+            seen.add(m)
+            out.append(m)
+    return out
 
 
 def _groq(api_key: str = ""):
@@ -134,6 +163,76 @@ async def _gemini_chat(messages, tools=None, tool_choice="auto",
     return content, calls
 
 
+async def _compat_chat(messages, tools=None, tool_choice="auto",
+                       temperature=0.7, max_tokens=3000, json_mode=False,
+                       api_key: str = "", model: str = "", url: str = "",
+                       tag: str = "compat"):
+    """One chat call to any OpenAI-compat REST endpoint. Returns (content, tool_calls)."""
+    import aiohttp
+
+    if not api_key:
+        raise RuntimeError(f"no {tag} key")
+    if not model or not url:
+        raise RuntimeError(f"no {tag} model/url")
+
+    body = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if max_tokens:
+        body["max_tokens"] = max_tokens
+    if tools:
+        body["tools"] = tools
+        body["tool_choice"] = tool_choice
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/lizereride90/vibe-bot",
+        "X-Title": "vibe-bot",
+    }
+    async with aiohttp.ClientSession() as sess:
+        async with sess.post(url, headers=headers,
+                             json=body, timeout=aiohttp.ClientTimeout(total=60)) as r:
+            txt = await r.text()
+            if r.status != 200:
+                raise RuntimeError(f"{tag} {r.status} model={model}: {txt[:800]}")
+            data = json.loads(txt or "{}")
+
+    try:
+        msg = data["choices"][0]["message"]
+    except Exception:
+        raise RuntimeError(f"{tag} bad shape: {txt[:300]}")
+
+    content = msg.get("content") or ""
+    # some free models put "reasoning" chatter in a separate field — ignore it
+    raw_calls = msg.get("tool_calls") or []
+    calls = []
+    for tc in raw_calls:
+        fn = (tc.get("function") or {})
+        calls.append({
+            "id": tc.get("id", f"call_{len(calls)}"),
+            "name": fn.get("name", ""),
+            "arguments": fn.get("arguments") or "{}",
+        })
+    if not content and not calls:
+        raise RuntimeError(f"{tag} empty response")
+    return content, calls
+
+
+async def _openrouter_chat(messages, tools=None, tool_choice="auto",
+                           temperature=0.7, max_tokens=3000, json_mode=False,
+                           api_key: str = "", model_override: str = ""):
+    """One chat call to OpenRouter. Thin wrapper over _compat_chat."""
+    model = model_override or os.getenv("OPENROUTER_MODEL", OPENROUTER_MODEL)
+    return await _compat_chat(messages, tools, tool_choice, temperature,
+                              max_tokens, json_mode, api_key=api_key,
+                              model=model, url=OPENROUTER_URL, tag="OpenRouter")
+
+
 async def _groq_chat(messages, tools=None, tool_choice="auto",
                      temperature=0.7, max_tokens=3000, json_mode=False,
                      model_override=None, api_key: str = ""):
@@ -172,13 +271,46 @@ async def _groq_chat(messages, tools=None, tool_choice="auto",
 async def chat(messages, tools=None, tool_choice="auto",
                temperature=0.7, max_tokens=3000, json_mode=False,
                groq_model=None):
-    """Gemini keys first (rotate on 429/503/5xx), then Groq keys (rotate on 429).
+    """OpenRouter first, Gemini second, Groq last. Rotate keys on 429/503/5xx.
 
-    Set comma-separated keys: GEMINI_API_KEY=k1,k2,k3 / GROQ_API_KEY=k1,k2,k3
-    Returns (content: str, tool_calls: list, provider: str).
-    Raises RuntimeError only if ALL keys fail.
+    Set comma-separated keys: OPENROUTER_API_KEY=k1,k2 / GEMINI_API_KEY=k1,k2,k3
+    / GROQ_API_KEY=k1,k2,k3. Returns (content, tool_calls, provider).
+    Raises RuntimeError only if ALL legs fail.
     """
     last_err = None
+
+    # 0) OpenRouter: models outer, keys inner — every model gets every key.
+    # Dead model -> next model. 429/503/5xx -> next key. One OR key fans
+    # out to ~24 free models server-side, so this leg absorbs most traffic.
+    for omodel in _openrouter_models():
+        okeys = _openrouter_keys()
+        for oi, okey in enumerate(okeys):
+            for attempt in range(2):  # 1 retry for transient spikes on same key
+                try:
+                    content, calls = await _openrouter_chat(
+                        messages, tools, tool_choice, temperature, max_tokens, json_mode,
+                        api_key=okey, model_override=omodel)
+                    return content, calls, "openrouter"
+                except Exception as e:
+                    last_err = e
+                    msg = str(e)[:300]
+                    dead = "404" in msg or "not found" in msg.lower() or "does not exist" in msg or "No endpoints" in msg
+                    if dead:
+                        print(f"llm: openrouter model={omodel} dead, trying next model...")
+                        break  # next model
+                    transient = any(s in msg for s in ("503", "500", "529", "429", "overloaded", "high demand", "UNAVAILABLE", "timeout", "Timeout", "rate"))
+                    is_auth = any(s in msg for s in ("401", "403", "API key", "API_KEY_INVALID", "invalid", "credits", "limit exceeded"))
+                    if transient and attempt == 0:
+                        await asyncio.sleep(1.2)
+                        continue
+                    tag = f"key{oi+1}/{len(okeys)} model={omodel}"
+                    print(f"llm: openrouter {tag} failed ({msg[:150]}), trying next...")
+                    break  # next key, same model order
+        else:
+            continue
+        # dead-model break above must escape cleanly — check and move on:
+        if last_err and ("404" in str(last_err)[:300] or "No endpoints" in str(last_err)[:300]):
+            continue
 
     # 1) Gemini: models outer, keys inner — every model gets every key.
     # dead model -> next model. 429/503/auth -> next key. thought_signature
@@ -259,11 +391,30 @@ async def chat(messages, tools=None, tool_choice="auto",
 
 
 async def probe_and_log():
-    """Startup probe: list models visible to the first Gemini key + Groq key.
+    """Startup probe: OpenRouter key validity + Gemini models visible.
 
     Prints full error bodies so 404s can actually be diagnosed.
     Runs once at boot, costs 1-2 tiny API calls.
     """
+    import aiohttp
+    for oi, okey in enumerate(_openrouter_keys()[:3]):
+        try:
+            headers = {"Authorization": f"Bearer {okey}"}
+            async with aiohttp.ClientSession() as sess:
+                async with sess.get(
+                    "https://openrouter.ai/api/v1/auth/key",
+                    headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as r:
+                    txt = await r.text()
+                    if r.status != 200:
+                        print(f"llm probe: openrouter key{oi+1} auth {r.status}: {txt[:300]}")
+                        continue
+                    try:
+                        usage = json.loads(txt).get("data", {})
+                        print(f"llm probe: openrouter key{oi+1} OK (usage={usage.get('usage', '?')}, limit={usage.get('limit', '?')})")
+                    except Exception:
+                        print(f"llm probe: openrouter key{oi+1} OK: {txt[:200]}")
+        except Exception as e:
+            print(f"llm probe: openrouter key{oi+1} error: {type(e).__name__}: {str(e)[:200]}")
     import aiohttp
     for gi, gkey in enumerate(_gemini_keys()[:3]):
         try:
@@ -289,9 +440,9 @@ async def probe_and_log():
 
 async def classify(system_prompt, user_text, temperature=0.2, max_tokens=200,
                    groq_model=None):
-    """Classifier helper (watchdog). Gemini first, Groq fallback.
+    """Classifier helper (watchdog). OpenRouter first, Gemini, Groq last.
 
-    Returns parsed JSON dict, or None if both fail.
+    Returns parsed JSON dict, or None if all fail.
     """
     messages = [
         {"role": "system", "content": system_prompt},
