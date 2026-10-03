@@ -1476,6 +1476,21 @@ WRITE_TOOLS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "make_file",
+            "description": "Create a text/code file and send it here. filename like notes.txt, rules.md, script.py. Content up to ~8000 chars.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["filename", "content"],
+            },
+        },
+    },
 ]
 
 TOOLS_SCHEMA = READ_TOOLS + WRITE_TOOLS
@@ -1732,10 +1747,50 @@ async def _execute(name, args, guild, origin, author=None):
         created = m.created_at.strftime("%Y-%m-%d")
         timed = f"timed out until {m.timed_out_until:%Y-%m-%d %H:%M}" if m.timed_out_until else "no"
         boost = m.premium_since.strftime("%Y-%m-%d") if m.premium_since else "no"
-        return (f"{m.display_name} (@{m.name}) — {m.id}\n"
-                f"Nick: {m.nick or 'none'} | Bot: {'yes' if m.bot else 'no'}\n"
-                f"Joined server: {joined} | Account made: {created}\n"
-                f"Roles: {roles}\nTimeout: {timed} | Boosting: {boost}"), []
+        status = str(getattr(m, "status", "?"))
+        act = ""
+        try:
+            acts = [a for a in (getattr(m, "activities", "") or []) if getattr(a, "name", "")]
+            if acts:
+                act = f" | Doing: {acts[0].name[:60]}"
+        except Exception:
+            pass
+        plat = ""
+        try:
+            ps = []
+            ms, ws, ds = getattr(m, "mobile_status", None), getattr(m, "web_status", None), getattr(m, "desktop_status", None)
+            if str(ms) != "offline":
+                ps.append("📱")
+            if str(ws) != "offline":
+                ps.append("🌐")
+            if str(ds) != "offline":
+                ps.append("🖥️")
+            plat = f" [{''.join(ps) or 'offline'}]"
+        except Exception:
+            pass
+        top = m.top_role.name if m.top_role and not m.top_role.is_default() else "none"
+        av = m.display_avatar.url if m.display_avatar else "none"
+        # bio / about-me: best effort via profile fetch (may need no special perms)
+        bio = ""
+        bann = ""
+        try:
+            prof = await m.fetch_profile() if hasattr(m, "fetch_profile") else None
+            if prof:
+                bio = (getattr(prof, "bio", "") or "")[:300]
+                bann = getattr(getattr(prof, "banner", None), "url", "") or ""
+        except Exception:
+            pass
+        out = (f"{m.display_name} (@{m.name})" + (f" 🌐{m.global_name}" if getattr(m, "global_name", "") and m.global_name != m.display_name else "") + f" — {m.id}\n"
+               f"Nick: {m.nick or 'none'} | Bot: {'yes' if m.bot else 'no'} | Top role: {top}\n"
+               f"Joined server: {joined} | Account made: {created}\n"
+               f"Status: {status}{plat}{act}\n"
+               f"Roles: {roles}\nTimeout: {timed} | Boosting: {boost}\n"
+               f"Avatar: {av}")
+        if bio:
+            out += f"\nBio: {bio}"
+        if bann:
+            out += f"\nBanner: {bann}"
+        return out, []
 
     if name == "recent_messages":
         ch = _find_text_channel(guild, args["channel"]) if args.get("channel") else origin
@@ -2823,6 +2878,30 @@ async def _execute(name, args, guild, origin, author=None):
             return "No active invites.", []
         rows = sorted(invs, key=lambda i: (i.uses or 0), reverse=True)[:15]
         return "\n".join(f"{i.code} #{i.channel} by {i.inviter} — {i.uses}/{i.max_uses or '∞'}" for i in rows), []
+
+    if name == "make_file":
+        raw_name = str(args.get("filename", "file.txt")).strip()[:60]
+        # sanitize: basename only, safe extension
+        safe = re.sub(r"[^a-zA-Z0-9._-]", "_", raw_name.split("/")[-1].split("\\")[-1]) or "file.txt"
+        if "." not in safe:
+            safe += ".txt"
+        ext = safe.rsplit(".", 1)[-1].lower()
+        allowed = {"txt", "md", "py", "js", "json", "csv", "yml", "yaml", "log", "html", "css", "lua", "rs", "go", "java", "c", "cpp", "sh"}
+        if ext not in allowed:
+            safe = safe.rsplit(".", 1)[0] + ".txt"
+        content = str(args.get("content", ""))[:8000]
+        if not content.strip():
+            return "Empty content — nothing to write.", []
+        ch = origin if origin and hasattr(origin, "send") else None
+        if not ch:
+            return "No channel to send to.", []
+        try:
+            import io
+            f = discord.File(io.BytesIO(content.encode()), filename=safe)
+            await ch.send(f"📄 `{safe}` ({len(content)} chars):", file=f)
+            return f"Sent `{safe}` above ☝️", []
+        except Exception as e:
+            return f"Failed to send file: {e}", []
 
     # ----- tickets+ (add/remove/transcript) -----
     if name == "ticket_add":

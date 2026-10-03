@@ -258,9 +258,10 @@ async def on_message(message: discord.Message):
             pinged = False
 
     if not pinged:
-        # passive scan: watchdog watches every message for spam/scams/questions
+        # passive scan: watchdog moderates every message, but only ANSWERS
+        # when pinged or replying to the bot (gated inside watch).
         try:
-            await watch(message)
+            await watch(message, pinged=False)
         except Exception as e:
             print(f"watchdog error: {type(e).__name__}: {str(e)[:200]}")
         return
@@ -270,7 +271,29 @@ async def on_message(message: discord.Message):
         text = text.replace(f"<@{m.id}>", "").replace(f"<@!{m.id}>", "")
     text = text.strip()
 
-    if not text:
+    # attached files: read text-like files (<200KB each, max 3) into context
+    file_blob = ""
+    try:
+        readable = (".txt", ".md", ".py", ".js", ".json", ".csv", ".yml", ".yaml",
+                    ".ini", ".cfg", ".log", ".html", ".css", ".lua", ".rs", ".go")
+        for att in (message.attachments or [])[:3]:
+            name = (att.filename or "").lower()
+            if not name.endswith(readable):
+                file_blob += f"\n[attached file {att.filename}: skipped (not a readable text type)]"
+                continue
+            if (att.size or 0) > 200 * 1024:
+                file_blob += f"\n[attached file {att.filename}: skipped (over 200KB)]"
+                continue
+            try:
+                raw = await att.read()
+                decoded = raw.decode("utf-8", errors="replace")[:6000]
+                file_blob += f"\n--- attached file: {att.filename} ---\n{decoded}\n--- end {att.filename} ---"
+            except Exception as e:
+                file_blob += f"\n[attached file {att.filename}: unreadable ({e})]"
+    except Exception:
+        pass
+
+    if not text and not file_blob:
         await safe_reply(message, "hey, what do you want me to do? just ping me and tell me.")
         return
 
@@ -307,7 +330,7 @@ async def on_message(message: discord.Message):
             }
 
             reply, created_roles = await ask(
-                prompt=text,
+                prompt=(text + file_blob) if file_blob else text,
                 guild=message.guild,
                 author_is_admin=context["author_is_admin"],
                 context=context,

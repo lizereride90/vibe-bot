@@ -216,7 +216,28 @@ async def _social(message: discord.Message, s: dict, now: float):
         pass
 
 
-async def watch(message: discord.Message):
+def _gated(message: discord.Message, pinged: bool = False) -> bool:
+    """True only when the bot was pinged or the message replies to a bot msg.
+    Watchdog answers stay behind this gate — moderation stays always-on.
+    bot.py passes its own strictly-resolved pinged flag; the reply check
+    below is a best-effort fallback for direct watch() callers."""
+    if pinged:
+        return True
+    try:
+        ref = message.reference
+        if ref and ref.message_id:
+            r = ref.resolved
+            if r is not None:
+                try:
+                    return bool(getattr(r, "author", None) and getattr(r.author, "bot", False))
+                except Exception:
+                    return False
+    except Exception:
+        pass
+    return False
+
+
+async def watch(message: discord.Message, pinged: bool = False):
     if not ENABLED or message.author.bot or not message.guild:
         return
     text = message.content.strip()
@@ -260,8 +281,11 @@ async def watch(message: discord.Message):
     except Exception:
         pass
 
-    # called by name without a ping -> answer path (word boundary, not "vibes")
+    # called by name without a ping -> only answer if actually gated (ping/reply).
+    # Otherwise stay silent — moderation above already ran.
     if VIBE_RE.search(text):
+        if not _gated(message, pinged):
+            return
         if now - _last_answer.get(message.channel.id, 0) < ANSWER_COOLDOWN:
             return
         _last_answer[message.channel.id] = now
@@ -293,6 +317,10 @@ async def watch(message: discord.Message):
         _last_mod[message.author.id] = now
         await _moderate(message, sev, verdict.get("reason", ""))
     elif decision == "answer":
+        # classifier wants to answer, but only pinged/replied messages get one.
+        # Everything else stays silent — no free replies in normal chat.
+        if not _gated(message, pinged):
+            return
         if now - _last_answer.get(message.channel.id, 0) < ANSWER_COOLDOWN:
             return
         _last_answer[message.channel.id] = now
