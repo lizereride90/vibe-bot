@@ -1773,13 +1773,20 @@ async def _execute(name, args, guild, origin, author=None):
         # bio / about-me: best effort via profile fetch (may need no special perms)
         bio = ""
         bann = ""
+        bio_note = ""
         try:
             prof = await m.fetch_profile() if hasattr(m, "fetch_profile") else None
             if prof:
                 bio = (getattr(prof, "bio", "") or "")[:300]
                 bann = getattr(getattr(prof, "banner", None), "url", "") or ""
+                if not bio:
+                    bio_note = "(this member has no bio text set)"
+            else:
+                bio_note = "(bio lookup unavailable for this member)"
+        except discord.Forbidden:
+            bio_note = "(bio hidden — no access)"
         except Exception:
-            pass
+            bio_note = "(bio lookup failed for this member)"
         out = (f"{m.display_name} (@{m.name})" + (f" 🌐{m.global_name}" if getattr(m, "global_name", "") and m.global_name != m.display_name else "") + f" — {m.id}\n"
                f"Nick: {m.nick or 'none'} | Bot: {'yes' if m.bot else 'no'} | Top role: {top}\n"
                f"Joined server: {joined} | Account made: {created}\n"
@@ -1788,6 +1795,8 @@ async def _execute(name, args, guild, origin, author=None):
                f"Avatar: {av}")
         if bio:
             out += f"\nBio: {bio}"
+        elif bio_note:
+            out += f"\nBio: {bio_note}"
         if bann:
             out += f"\nBanner: {bann}"
         return out, []
