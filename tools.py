@@ -808,6 +808,171 @@ WRITE_TOOLS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "ticket_add",
+            "description": "Add a member to the current ticket channel (run inside the ticket).",
+            "parameters": {
+                "type": "object",
+                "properties": {"member": {"type": "string"}},
+                "required": ["member"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ticket_remove",
+            "description": "Remove a member from the current ticket channel (run inside the ticket).",
+            "parameters": {
+                "type": "object",
+                "properties": {"member": {"type": "string"}},
+                "required": ["member"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ticket_transcript",
+            "description": "Save this ticket's history as a transcript file to the log channel, then close it.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "tempban",
+            "description": "Ban a member for N minutes, then auto-unban. e.g. minutes=60.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member": {"type": "string"},
+                    "minutes": {"type": "integer"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["member", "minutes"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "temprole",
+            "description": "Give a role for N minutes, then auto-remove. e.g. minutes=60.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member": {"type": "string"},
+                    "role": {"type": "string"},
+                    "minutes": {"type": "integer"},
+                },
+                "required": ["member", "role", "minutes"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "level_role_add",
+            "description": "Auto-give a role when a member hits an XP level. e.g. level=5 role=Veteran.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "level": {"type": "integer"},
+                    "role": {"type": "string"},
+                },
+                "required": ["level", "role"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "level_role_remove",
+            "description": "Remove an XP level reward role.",
+            "parameters": {
+                "type": "object",
+                "properties": {"level": {"type": "integer"}},
+                "required": ["level"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "level_roles_list",
+            "description": "List all XP level reward roles.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "verify_setup",
+            "description": "Gate new joins: newcomers get this role until staff approve them (use assign_role to approve).",
+            "parameters": {
+                "type": "object",
+                "properties": {"role": {"type": "string"}},
+                "required": ["role"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "verify_off",
+            "description": "Turn off the new-member verification gate.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "antiraid",
+            "description": "Auto-lockdown when >5 joins hit within 30s. Use mode='on' or 'off'.",
+            "parameters": {
+                "type": "object",
+                "properties": {"mode": {"type": "string"}},
+                "required": ["mode"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "report",
+            "description": "Report a member to mods — posts to the log channel with reason.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["member", "reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "snipe",
+            "description": "Show the last deleted message in this channel (or a named channel).",
+            "parameters": {
+                "type": "object",
+                "properties": {"channel": {"type": "string"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "welcome_test",
+            "description": "Preview the welcome message right here without a new join.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
     # ----- reaction roles -----
     {
         "type": "function",
@@ -1315,8 +1480,9 @@ WRITE_TOOLS = [
 
 TOOLS_SCHEMA = READ_TOOLS + WRITE_TOOLS
 WRITE_NAMES = {t["function"]["name"] for t in WRITE_TOOLS}
-OPEN_WRITES = {"save_note", "delete_note", "afk_set", "rank", "leaderboard"}  # harmless, anyone can use
+OPEN_WRITES = {"save_note", "delete_note", "afk_set", "rank", "leaderboard", "report", "snipe"}  # harmless, anyone can use
 START_TIME = datetime.datetime.now(datetime.timezone.utc)
+_SNIPE: dict[str, dict] = {}  # "guild:channel" -> {who, text} last deleted message
 
 
 # ---------- finders ----------
@@ -2657,5 +2823,195 @@ async def _execute(name, args, guild, origin, author=None):
             return "No active invites.", []
         rows = sorted(invs, key=lambda i: (i.uses or 0), reverse=True)[:15]
         return "\n".join(f"{i.code} #{i.channel} by {i.inviter} — {i.uses}/{i.max_uses or '∞'}" for i in rows), []
+
+    # ----- tickets+ (add/remove/transcript) -----
+    if name == "ticket_add":
+        ch = origin if origin and hasattr(origin, "name") else None
+        if not ch or not ch.name.startswith("ticket-"):
+            return "Run this inside the ticket channel.", []
+        m = _find_member(guild, args["member"])
+        if not m:
+            return f"No member matching '{args['member']}'.", []
+        try:
+            await ch.set_permissions(m, read_messages=True, send_messages=True, reason="Vibe ticket add")
+        except Exception as e:
+            return f"Failed to add: {e}", []
+        return f"Added {m.display_name} to {ch.name}.", []
+
+    if name == "ticket_remove":
+        ch = origin if origin and hasattr(origin, "name") else None
+        if not ch or not ch.name.startswith("ticket-"):
+            return "Run this inside the ticket channel.", []
+        m = _find_member(guild, args["member"])
+        if not m:
+            return f"No member matching '{args['member']}'.", []
+        try:
+            await ch.set_permissions(m, overwrite=None, reason="Vibe ticket remove")
+        except Exception as e:
+            return f"Failed to remove: {e}", []
+        return f"Removed {m.display_name} from {ch.name}.", []
+
+    if name == "ticket_transcript":
+        ch = origin if origin and hasattr(origin, "name") else None
+        if not ch or not ch.name.startswith("ticket-"):
+            return "Run this inside the ticket channel.", []
+        try:
+            lines = []
+            async for m in ch.history(limit=200, oldest_first=True):
+                tag = m.author.display_name.replace("\n", " ")
+                lines.append(f"[{m.created_at:%Y-%m-%d %H:%M}] {tag}: {m.content[:500]}")
+            body = "\n".join(lines) or "(empty ticket)"
+            import io
+            f = discord.File(io.BytesIO(body.encode()), filename=f"{ch.name}-transcript.txt")
+            log = _find_text_channel(guild, (cfg.get_settings(guild.id).get("log_channel") or ""))
+            if log:
+                try:
+                    await log.send(f"📝 Transcript for #{ch.name} ({len(lines)} msgs)", file=f)
+                except Exception:
+                    pass
+            else:
+                try:
+                    await ch.send("📝 Transcript:", file=f)
+                    return "No log channel set — transcript posted here instead. Set one with setup_log.", []
+                except Exception as e:
+                    return f"Failed to build transcript: {e}", []
+            await ch.send("Transcript saved ✅ — closing in 5s…")
+            await asyncio.sleep(5)
+            await ch.delete(reason="Vibe ticket closed with transcript")
+            return f"Transcript saved ({len(lines)} msgs), #{ch.name} closed.", []
+        except Exception as e:
+            return f"Failed: {e}", []
+
+    # ----- timed moderation -----
+    if name == "tempban":
+        m = _find_member(guild, args["member"])
+        if not m:
+            return f"No member matching '{args['member']}'.", []
+        ok, why = _manageable(guild, m)
+        if not ok:
+            return f"Can't tempban: {why}.", []
+        minutes = max(1, min(int(args.get("minutes", 60)), 60 * 24 * 7))
+        reason = str(args.get("reason", "tempban"))[:200]
+        try:
+            await m.ban(reason=f"Vibe tempban {minutes}m: {reason}", delete_message_days=1)
+        except Exception as e:
+            return f"Failed to ban: {e}", []
+
+        async def _unban_later():
+            await asyncio.sleep(minutes * 60)
+            try:
+                await guild.unban(discord.Object(id=m.id), reason="Vibe tempban expired")
+                await _log(guild, f"⏳ Tempban expired — unbanned {m.display_name} ({m.id})")
+            except Exception:
+                pass
+
+        asyncio.create_task(_unban_later())
+        return f"🔨 Tempbanned {m.display_name} for {minutes}m ({reason}). Auto-unban scheduled — note: lost on bot restart.", []
+
+    if name == "temprole":
+        m = _find_member(guild, args["member"])
+        role = _find_role(guild, args["role"])
+        if not m:
+            return f"No member matching '{args['member']}'.", []
+        if not role:
+            return f"No role matching '{args['role']}'.", []
+        minutes = max(1, min(int(args.get("minutes", 60)), 60 * 24 * 7))
+        try:
+            await m.add_roles(role, reason=f"Vibe temprole {minutes}m")
+        except Exception as e:
+            return f"Failed: {e}", []
+
+        async def _remove_later():
+            await asyncio.sleep(minutes * 60)
+            try:
+                fresh = guild.get_member(m.id)
+                if fresh and role in fresh.roles:
+                    await fresh.remove_roles(role, reason="Vibe temprole expired")
+                    await _log(guild, f"⏳ Temprole expired — removed {role.name} from {fresh.display_name}")
+            except Exception:
+                pass
+
+        asyncio.create_task(_remove_later())
+        return f"⏳ Gave {role.name} to {m.display_name} for {minutes}m. Auto-remove scheduled — note: lost on bot restart.", []
+
+    # ----- level reward roles -----
+    if name == "level_role_add":
+        level = max(1, min(int(args.get("level", 1)), 100))
+        role = _find_role(guild, args["role"])
+        if not role:
+            return f"No role matching '{args['role']}'. Create it first.", []
+        cfg.update_settings(guild.id, level_roles={**cfg.get_settings(guild.id).get("level_roles", {}), str(level): role.name})
+        return f"🏆 Level {level} → {role.name}. Members hitting it get the role automatically.", []
+
+    if name == "level_role_remove":
+        level = str(int(args.get("level", 0)))
+        lr = dict(cfg.get_settings(guild.id).get("level_roles", {}))
+        if level not in lr:
+            return f"No reward set for level {level}.", []
+        lr.pop(level)
+        cfg.update_settings(guild.id, level_roles=lr)
+        return f"Removed level {level} reward.", []
+
+    if name == "level_roles_list":
+        lr = cfg.get_settings(guild.id).get("level_roles", {})
+        if not lr:
+            return "No level rewards set. Use level_role_add.", []
+        return "🏆 Level rewards:\n" + "\n".join(f"Level {k} → {v}" for k, v in sorted(lr.items(), key=lambda x: int(x[0]))), []
+
+    # ----- verification gate + antiraid -----
+    if name == "verify_setup":
+        role = _find_role(guild, args["role"])
+        if not role:
+            return f"No role matching '{args['role']}'. Create it first (e.g. Unverified).", []
+        cfg.update_settings(guild.id, verify_enabled=True, verify_role=role.name)
+        return (f"🛡️ Verification gate ON — new joins get {role.name}. "
+                "Staff approve with assign_role. Lock down the rest of the channels to hide them from this role for full effect."), []
+
+    if name == "verify_off":
+        cfg.update_settings(guild.id, verify_enabled=False, verify_role="")
+        return "Verification gate OFF.", []
+
+    if name == "antiraid":
+        mode = str(args.get("mode", "")).lower() in ("on", "true", "enable", "yes")
+        cfg.update_settings(guild.id, antiraid=mode)
+        return f"🚨 Anti-raid {'ON — >5 joins in 30s triggers auto-lockdown + mod log ping' if mode else 'OFF'}.", []
+
+    # ----- report + snipe + welcome preview -----
+    if name == "report":
+        m = _find_member(guild, args["member"])
+        if not m:
+            return f"No member matching '{args['member']}'.", []
+        reason = str(args.get("reason", "no reason"))[:500]
+        who = author.display_name if author and hasattr(author, "display_name") else "someone"
+        await _log(guild, f"🚩 REPORT by {who}: {m.display_name} ({m.id}) — {reason}")
+        return f"Report filed against {m.display_name} — mods can see it in the log channel.", []
+
+    if name == "snipe":
+        ch = _find_text_channel(guild, args["channel"]) if args.get("channel") else (origin if origin and hasattr(origin, "id") else None)
+        if not ch:
+            return "No channel found.", []
+        hit = _SNIPE.get(f"{guild.id}:{ch.id}")
+        if not hit:
+            return "Nothing sniped in that channel yet.", []
+        return f"📸 Last deleted in #{ch.name} — {hit['who']}: {hit['text'][:800]}", []
+
+    if name == "welcome_test":
+        s = cfg.get_settings(guild.id)
+        if not s.get("welcome_enabled"):
+            return "Welcome is off. Set it up first (setup_welcome).", []
+        me = author if author and hasattr(author, "display_name") else None
+        preview = _fmt(s.get("welcome_message", "welcome {member}!"), me, guild)
+        ch = origin if origin and hasattr(origin, "send") else None
+        if ch:
+            try:
+                if s.get("welcome_embed", True):
+                    await send_v2(ch, f"Welcome to {guild.name}! 🎉", preview, "#A78BFA",
+                                  footer=f"Preview — real joins post in #{s.get('welcome_channel')}",
+                                  thumbnail=guild.icon.url if guild.icon else "")
+                else:
+                    await ch.send(f"👋 {preview}"[:1900])
+            except Exception:
+                pass
+        return "Welcome preview posted above ☝️", []
 
     return f"Unknown tool: {name}", []

@@ -47,6 +47,35 @@ async def on_member_join(member: discord.Member):
     try:
         guild = member.guild
         s = cfg.get_settings(guild.id)
+        # antiraid: >5 joins in 30s -> auto-lockdown + log
+        if s.get("antiraid"):
+            import time as _t
+            from collections import deque as _dq
+            _r = getattr(on_member_join, "_bursts", None)
+            if _r is None:
+                _r = on_member_join._bursts = {}
+            dq = _r.setdefault(guild.id, _dq(maxlen=10))
+            now = _t.monotonic()
+            dq.append(now)
+            if len(dq) >= 6 and (now - dq[0]) < 30:
+                dq.clear()
+                try:
+                    from tools import run_tool as _rt
+                    await _rt("lock_all", {"reason": "Vibe anti-raid: join burst"}, guild, True, None, None)
+                    await _rt("send_message", {"channel": s.get("log_channel") or "mod-log",
+                              "text": f"🚨 ANTI-RAID: join burst detected — server auto-locked. Unlock with `@Vibe unlock all`."},
+                              guild, True, None, None)
+                except Exception:
+                    pass
+                return  # skip welcome spam during raid
+        # verification gate: newcomers get the gate role until staff approve
+        if s.get("verify_enabled") and s.get("verify_role"):
+            role = _find_role(guild, s["verify_role"])
+            if role:
+                try:
+                    await member.add_roles(role, reason="Vibe verify gate")
+                except Exception:
+                    pass
         # autorole
         if s.get("autorole"):
             role = _find_role(guild, s["autorole"])
@@ -65,12 +94,22 @@ async def on_member_join(member: discord.Member):
             return
         msg = _fmt(s.get("welcome_message", "welcome {member}!"), member, guild)
         ping = member.mention if s.get("welcome_ping") else None
+        rules = ""
+        try:
+            for chx in guild.text_channels:
+                if "rule" in chx.name.lower():
+                    rules = f"\n\n📜 Check {chx.mention} first!"
+                    break
+        except Exception:
+            pass
+        banner = guild.banner.url if guild.banner else (guild.icon.url if guild.icon else "")
         if s.get("welcome_embed", True):
-            await send_v2(ch, f"Welcome to {guild.name}! 🎉", msg, "#A78BFA",
-                          footer=f"You're member #{guild.member_count}",
-                          thumbnail=member.display_avatar.url, content=ping)
+            await send_v2(ch, f"Welcome to {guild.name}! 🎉", msg + rules, "#A78BFA",
+                          footer=f"You're member #{guild.member_count} • Say hi!",
+                          thumbnail=member.display_avatar.url,
+                          image=banner, content=ping)
         else:
-            await ch.send(f"{ping + ' ' if ping else ''}{msg}"[:1900])
+            await ch.send(f"{ping + ' ' if ping else ''}{msg}{rules}"[:1900])
     except Exception as e:
         print(f"welcome error: {e}")
     # member counter update
@@ -111,6 +150,22 @@ async def on_member_remove(member: discord.Member):
         pass
     try:
         await _update_counter(member.guild)
+    except Exception:
+        pass
+
+
+@client.event
+async def on_message_delete(message: discord.Message):
+    try:
+        if not message.guild or message.author.bot:
+            return
+        if not message.content or len(message.content.strip()) < 1:
+            return
+        from tools import _SNIPE as _sn
+        _sn[f"{message.guild.id}:{message.channel.id}"] = {
+            "who": message.author.display_name,
+            "text": message.content[:1000],
+        }
     except Exception:
         pass
 

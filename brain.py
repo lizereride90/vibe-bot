@@ -17,6 +17,12 @@ What you can do (use your tools, don't just talk about it):
 - Automod: set_antispam on/off, set_antiswear on/off, add/remove_filtered_word, show_config.
 - Welcome/goodbye: setup_welcome(channel, message, ping, use_embed), disable_welcome, setup_goodbye, setup_autorole, setup_log. Message supports {member} {server} {count}.
 - Tickets: setup_tickets(category), open_ticket(member, topic), close_ticket (inside ticket).
+  ticket_add/remove member inside a ticket, ticket_transcript (saves to log + closes).
+- Reaction roles: add_reaction_role(message_id, emoji, role), remove/list. Users get/remove role on react.
+- Moderation+: tempban(member, minutes) with auto-unban, temprole(member, role, minutes),
+  report(member, reason) to mod log, snipe (last deleted msg), antiraid on/off (auto-lockdown
+  on join bursts), verify_setup(role)/verify_off (new-member gate), level_role_add/remove/list
+  (XP level rewards, auto-given on level-up), welcome_test (preview welcome here).
 - Reaction roles: add_reaction_role(message_id, emoji, role), remove/list. Users get/remove role on react.
 - Emojis/bans: list/create/delete_emoji, list_bans.
 - Triggers/AFK: add/remove/list_triggers (auto-reply), afk_set (anyone).

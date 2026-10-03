@@ -162,10 +162,25 @@ async def _social(message: discord.Message, s: dict, now: float):
         new = cfg.add_xp(guild.id, message.author.id, 5)
         if cfg.xp_level(new) > cfg.xp_level(old) and now - _last_levelup.get(message.author.id, 0) > 120:
             _last_levelup[message.author.id] = now
+            lvl = cfg.xp_level(new)
+            # level reward roles
+            try:
+                lr = (cfg.get_settings(guild.id).get("level_roles") or {})
+                rname = lr.get(str(lvl))
+                if rname:
+                    from tools import _find_role as _fr
+                    rr = _fr(guild, rname)
+                    if rr and rr not in message.author.roles:
+                        try:
+                            await message.author.add_roles(rr, reason=f"Vibe level {lvl} reward")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
             try:
                 from ui import send_v2
                 await send_v2(message.channel, "⬆️ Level up!",
-                              f"{message.author.mention} hit **Level {cfg.xp_level(new)}**!", "#A78BFA")
+                              f"{message.author.mention} hit **Level {lvl}**!", "#A78BFA")
             except Exception:
                 pass
 
